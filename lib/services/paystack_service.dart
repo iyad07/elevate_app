@@ -3,13 +3,17 @@ import 'package:http/http.dart' as http;
 import 'package:pay_with_paystack/pay_with_paystack.dart';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
+import 'package:flutter/foundation.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'api_client.dart';
 
 class PaystackService {
   // Demo API key - replace with your actual Paystack secret key
   static const String _secretKey = 'sk_test_0ea71ef818f8d1b993f44a9312577152d6c2eb08';
   static const String _publicKey = 'pk_test_your_paystack_public_key_here';
   static const String _baseUrl = 'https://api.paystack.co';
-  
+  final ApiClient _api = ApiClient();
+
   final Uuid _uuid = const Uuid();
 
   /// Initialize a payment transaction
@@ -119,7 +123,7 @@ class PaystackService {
   }) async {
     try {
       final String uniqueReference = _uuid.v4();
-      
+
       // Convert amount to kobo/pesewas (smallest currency unit)
       final int amountInKobo = (amount * 100).round();
 
@@ -130,11 +134,84 @@ class PaystackService {
         'bank_transfer',
       ];
 
+      // Web-specific flow: initialize and verify via backend endpoints
+      if (kIsWeb) {
+        try {
+          final initRes = await _api.dio.post(
+            '/api/payments/initialize',
+            data: {
+              'email': customerEmail,
+              'amount': amount.toStringAsFixed(2),
+              'currency': currency,
+              'callback_url': 'https://your-app.com/payment-callback',
+            },
+          );
+          final initData = (initRes.data as Map<String, dynamic>);
+          final authUrl = initData['authorization_url'] as String?;
+          final reference = initData['reference'] as String?;
+
+          if (authUrl == null || reference == null) {
+            return {
+              'success': false,
+              'message': 'Missing authorization URL or reference',
+              'reference': uniqueReference,
+            };
+          }
+
+          final launched = await launchUrl(
+            Uri.parse(authUrl),
+            mode: LaunchMode.externalApplication,
+          );
+          if (!launched) {
+            return {
+              'success': false,
+              'message': 'Could not open checkout URL',
+              'reference': reference,
+            };
+          }
+
+          // Poll verification via backend while user completes payment
+          for (int i = 0; i < 10; i++) {
+            await Future.delayed(const Duration(seconds: 3));
+            final verifyRes = await _api.dio.get('/api/payments/verify/$reference');
+            final verifyData = (verifyRes.data as Map<String, dynamic>);
+            final status = verifyData['status'] as String?;
+            if (status == 'success') {
+              return {
+                'success': true,
+                'data': verifyData,
+                'reference': reference,
+                'message': 'Payment completed successfully',
+              };
+            } else if (status == 'failed') {
+              return {
+                'success': false,
+                'message': 'Payment failed',
+                'reference': reference,
+              };
+            }
+          }
+
+          return {
+            'success': false,
+            'message': 'Verification timeout. Complete payment then return to the app.',
+            'reference': reference,
+          };
+        } catch (e) {
+          return {
+            'success': false,
+            'message': 'Payment init/verify error: ${e.toString()}',
+            'reference': uniqueReference,
+          };
+        }
+      }
+
+      // Mobile flow (Android/iOS): use SDK
       final payWithPaystack = PayWithPayStack();
-      
+
       // Create a completer to handle the async payment result
       Map<String, dynamic> paymentResult = {};
-      
+
       await payWithPaystack.now(
         context: context,
         secretKey: _secretKey,
@@ -162,15 +239,14 @@ class PaystackService {
 
       // Wait a bit for the callback to be processed
       await Future.delayed(const Duration(milliseconds: 500));
-      
-      return paymentResult.isNotEmpty 
-          ? paymentResult 
+
+      return paymentResult.isNotEmpty
+          ? paymentResult
           : {
               'success': false,
               'message': 'Payment process was interrupted',
               'reference': uniqueReference,
             };
-            
     } catch (e) {
       return {
         'success': false,
@@ -180,22 +256,22 @@ class PaystackService {
   }
 
   /// Add funds to wallet using Paystack
-  /// This method combines payment processing and wallet update
+  /// This method combines payment processing, verification, and wallet update
   Future<Map<String, dynamic>> addFundsToWallet({
     required BuildContext context,
     required String customerEmail,
     required double amount,
-    String currency = 'GHS', // Default to Ghana Cedis
+    String currency = 'GHS',
     Map<String, dynamic>? userMetadata,
   }) async {
     try {
-      // Process the payment
+      // Process the payment (web via backend, mobile via SDK)
       final paymentResult = await processPayment(
         context: context,
         customerEmail: customerEmail,
         amount: amount,
         currency: currency,
-        paymentChannels: ['card', 'mobile_money'], // Focus on card and mobile money
+        paymentChannels: ['card', 'mobile_money'],
         metadata: {
           'purpose': 'wallet_funding',
           'user_email': customerEmail,
@@ -204,37 +280,73 @@ class PaystackService {
       );
 
       if (paymentResult['success'] == true) {
-        // Verify the transaction
-        final verificationResult = await verifyTransaction(
-          paymentResult['reference'],
-        );
+        final reference = paymentResult['reference'] as String?;
+        if (reference == null || reference.isEmpty) {
+          return {
+            'success': false,
+            'message': 'Missing payment reference for verification',
+          };
+        }
+
+        // Verify transaction status (web via backend; mobile still direct to Paystack)
+        Map<String, dynamic> verificationResult;
+        if (kIsWeb) {
+          try {
+            final verifyRes = await _api.dio.get('/api/payments/verify/$reference');
+            verificationResult = {
+              'success': true,
+              'data': (verifyRes.data as Map<String, dynamic>),
+            };
+          } catch (e) {
+            verificationResult = {
+              'success': false,
+              'message': 'Could not verify payment: ${e.toString()}',
+            };
+          }
+        } else {
+          verificationResult = await verifyTransaction(reference);
+        }
 
         if (verificationResult['success'] == true) {
-          final transactionData = verificationResult['data'];
-          
-          // Check if payment was successful
-          if (transactionData['status'] == 'success') {
-            // Here you would typically update the user's wallet balance
-            // in your backend/database
-            
-            return {
-              'success': true,
-              'message': 'Funds added successfully to wallet',
-              'amount': amount,
-              'currency': currency,
-              'transaction_reference': paymentResult['reference'],
-              'transaction_data': transactionData,
-            };
+          final transactionData = verificationResult['data'] as Map<String, dynamic>;
+          final status = transactionData['status'] as String?;
+
+          if (status == 'success') {
+            // Credit wallet in backend
+            try {
+              final walletRes = await _api.dio.post(
+                '/api/wallet/add-funds',
+                data: {
+                  'amount': amount.toStringAsFixed(2),
+                  'currency': currency,
+                },
+              );
+              final walletData = (walletRes.data as Map<String, dynamic>);
+
+              return {
+                'success': true,
+                'message': 'Funds added successfully to wallet',
+                'amount': amount,
+                'currency': currency,
+                'transaction_reference': reference,
+                'balance': walletData['balance'],
+              };
+            } on Exception catch (e) {
+              return {
+                'success': false,
+                'message': 'Wallet credit failed: ${e.toString()}',
+              };
+            }
           } else {
             return {
               'success': false,
-              'message': 'Payment verification failed: ${transactionData['gateway_response']}',
+              'message': 'Payment verification failed',
             };
           }
         } else {
           return {
             'success': false,
-            'message': 'Could not verify payment: ${verificationResult['message']}',
+            'message': verificationResult['message'] ?? 'Could not verify payment',
           };
         }
       } else {

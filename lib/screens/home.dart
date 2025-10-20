@@ -81,7 +81,8 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       if (result['success'] == true) {
-        _showSuccessDialog(amount, result['transaction_reference']);
+        final newBalance = result['balance'];
+        _showSuccessDialog(amount, result['transaction_reference'], newBalance?.toString());
       } else {
         _showErrorDialog(result['message']);
       }
@@ -166,7 +167,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showSuccessDialog(double amount, String reference) {
+  void _showSuccessDialog(double amount, String reference, [String? newBalance]) {
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -192,6 +193,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 'Reference: $reference',
                 style: const TextStyle(color: Colors.white70, fontSize: 12),
               ),
+              if (newBalance != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'New Balance: ₵$newBalance',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
             ],
           ),
           actions: [
