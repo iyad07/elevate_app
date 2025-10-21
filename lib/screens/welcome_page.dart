@@ -43,7 +43,7 @@ class WelcomeScreen extends StatelessWidget {
       width: width,
       height: 14,
       decoration: BoxDecoration(
-        color: const Color.fromARGB(255, 0, 0, 0),
+        color: const Color(0xFF9ABE46),
         borderRadius: BorderRadius.circular(4),
       ),
     );
@@ -76,7 +76,7 @@ class WelcomeScreen extends StatelessWidget {
                   _buildLogoBar(100),
                   const SizedBox(height: 10),
                   Padding(
-                    padding: const EdgeInsets.only(left: 40.0),
+                    padding: const EdgeInsets.only(right: 40.0),
                     child: _buildLogoBar(90),
                   ),
                 ],
@@ -130,6 +130,7 @@ class WelcomeScreen extends StatelessWidget {
                   child: const Text(
                     'REGISTER',
                     style: TextStyle(
+                      color: Colors.white,
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                       letterSpacing: 1,
